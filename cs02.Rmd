@@ -1,0 +1,1344 @@
+---
+title: "CS02 - Right-To-Carry"
+author: "Adrian Castaneda, Garvin Mo Zhen, Melvin Chang"
+output: html_document
+---
+
+## Introduction
+
+In this case study, we seek to analyze the effect of multicollinearity on
+coefficient estimates from linear regression models when analyzing right
+to carry laws and violence rates. In the United States of America, the issue
+of gun violence has consistently become a controversial issue considering how
+impactful misusage has been since the inception of this country. Such misusages
+have included school shootings, shootings at festivals/clubs, and general gun
+violence out in the public streets. As such to prevent such atrocities from
+occurring, attempts have been made to minimize this through Right to Carry (RTC)
+Laws. Such laws are laws that "specifies if an how citizens are allowed to have a firearm on their person or nearby (for example, in a citizen's car) in 
+public" (Slide 4, CS02: Right-To-Carry (Data)).
+
+Such laws are created and carried out at the US state level. The only federal law
+regarding the right to keep and bear arms is our Second Amendment in the Bill of
+Rights which was ratified in 1791 (Slide 5, CS02: Right-To-Carry (Data)). A time period where muskets would be easily
+outclassed by our current firearm models. There are no such laws for carrying
+firearms in the public. Furthermore, severity for such laws vary greatly 
+between states regarding the right to carry firearms. For example, some states
+such as California require extensive effort to obtain a permit to legally carry
+a firearm, whereas other states like Arizona allows individuals to carry
+concealed firearms for lawful purposes without a permit. There are also other 
+states who meet at a middle ground and grants permits to carry a firearm upon
+the completion of specified requirements (Slide 5, CS02: Right-To-Carry (Data)). Analyzing the effect of 
+multicollinearity on coefficient estimates from our linear regression models 
+may serve to give us a better understanding of what kind of role a certain
+variable may play.
+
+### Load packages
+
+```{r load-packages, message=FALSE}
+library(OCSdata)
+library(tidyverse)
+library(pdftools)
+library(readxl)
+library(skimr) 
+library(ggrepel)
+library(broom)
+library(plm)
+library(car)
+library(rsample)
+library(GGally)
+library(ggcorrplot)
+```
+
+## Question
+
+What is the effect of multicollinearity on coefficient estimates from linear regression models when analyzing right to carry laws and violence rates?
+
+## The Data
+
+The dataset that we will be using for our case study is sourced from two contradictory analyses. The first is from John J. Donohue et al., in their analysis Right-to-Carry Laws and Violent Crime: A Comprehensive Assessment Using Panel Data and a State-Level Synthetic Control Analysis. The second is from David B. Mustard & John Lott and their analysis Crime, Deterrence, and Right-to-Carry Concealed Handguns. Coase-Sandor Institute for Law & Economics Working Paper No. 41.
+
+### Data Import
+In order to begin our analysis, we imported our raw data from the `OCSdata` library on youth disconnection.
+```{r}
+# OCSdata::load_raw_data("ocs-bp-RTC-wrangling", outpath = '.')
+
+# reads in xls file, skips first 5 lines
+STATE_FIPS <- readxl::read_xls("data/raw/State_FIPS_codes/state-geocodes-v2014.xls", skip = 5)
+
+# reads in csv from given the path to the file
+ps_data <- read_csv("data/raw/Police_staffing/ps_data.csv")
+
+# converts raw data into readable format, skips first 10 lines
+ue_rate_data <- list.files(recursive = TRUE,
+                            path = "data/raw/Unemployment",
+                            pattern = "*.xlsx",
+                            full.names = TRUE) |> 
+  map(~read_xlsx(., skip = 10))
+```
+
+
+Demographic/Population data:
+
+Since we are starting with raw data, we need to convert what we have into a useable R data. We began by reading the raw data as a csv assigning it a tibble object for each decade. 
+```{r, warning=FALSE, message=FALSE}
+# Create tibble from csv and skip five lines before reading the data
+dem_77_79 <- read_csv("data/raw/Demographics/Decade_1970/pe-19.csv", skip = 5) # Import from csv and skip five lines before reading the data
+
+# Convert raw data into a csv file, create tibble, and skip 5 lines before reading the data
+dem_80_89 <- list.files(recursive = TRUE,
+                  path = "data/raw/Demographics/Decade_1980",
+                  pattern = "*.csv",
+                  full.names = TRUE) |> 
+  purrr::map(~read_csv(., skip=5)) 
+
+# Convert raw data into a csv file, create tibble, and skip 14 lines before reading the data
+dem_90_99 <- list.files(recursive = TRUE,
+                  path = "data/raw/Demographics/Decade_1990",
+                  pattern = "*.txt",
+                  full.names = TRUE) |> 
+  map(~read_table2(., skip = 14))
+
+# Convert raw data into a csv file and create tibble
+dem_00_10 <- list.files(recursive = TRUE,
+                  path = "data/raw/Demographics/Decade_2000",
+                  pattern = "*.csv",
+                   full.names = TRUE) |> 
+   map(~read_csv(.))
+```
+
+### Data Wrangling
+
+Demographic/Population Data:
+
+Now that we have our data properly imported, we need to wrangle our data in R so we can begin our analysis. To support our demographic and population data, we need to quickly wrangle the FIPS data.
+```{r}
+STATE_FIPS <- STATE_FIPS |>
+  # Rename columns
+  rename(STATEFP = `State\n(FIPS)`,
+         STATE = Name) |>
+  select(STATEFP, STATE) |> # Only keep STATEFP and STATE columns
+  filter(STATEFP != "00") # Filter out STATEFP not equal to 00
+```
+
+Moving to our demographic and population data, we started with the 70s data. We wrangled the data by assigning and creating specific race, sex, age group, and sub population columns while removing years before 1977 from the existing columns and removing any redundant columns afterwards.
+```{r}
+dem_77_79 <- dem_77_79 |>
+  rename("race_sex" =`Race/Sex Indicator`) |> # Rename column
+  # Create sex and race columns
+  mutate(SEX = str_extract(race_sex, "male|female"), # Extract sex from the race_sex column
+        RACE = str_extract(race_sex, "Black|White|Other"))|> # Extract race from the race_sex column
+  select(-`FIPS State Code`, -`race_sex`) |> # Delete FIPS State Code and race_sex columns as they are now separated into different columns
+  # Simplify column names
+  rename("YEAR" = `Year of Estimate`,
+        "STATE" = `State Name`) |>
+  filter(YEAR %in% 1977:1979) # Filter for only years 1977-79
+dem_77_79 <- dem_77_79 |>
+  # Moves demographic data into rows with age group and sub populations as columns
+  pivot_longer(cols=contains("years"),
+               names_to = "AGE_GROUP",
+               values_to = "SUB_POP")
+```
+
+We wrangled the 80s data similarly to the 70s data by assigning and creating specific race, sex, age group, and sub population columns from the existing columns and removing any redundant columns afterwards.
+```{r}
+# Make the 80s data into a data frame
+dem_80_89 <- dem_80_89 |>
+  map_df(bind_rows)
+dem_80_89 <- dem_80_89 |>
+  rename("race_sex" =`Race/Sex Indicator`) |> # Rename column
+  # Create sex and race columns
+  mutate(SEX = str_extract(race_sex, "male|female"), # Extract sex from the race_sex column
+        RACE = str_extract(race_sex, "Black|White|Other"))|> # Extract race from the race_sex column
+  select( -`race_sex`) |> # Delete race_sex column as they are now separated into different columns
+  rename("YEAR" = `Year of Estimate`) |>  # Simplify column name
+  rename("STATEFP_temp" = "FIPS State and County Codes") |>
+  mutate(STATEFP = str_sub(STATEFP_temp, start = 1, end = 2)) |>
+    left_join(STATE_FIPS, by = "STATEFP") |>
+  select(-STATEFP) # Delete STATEFP column because it is no longer needed
+dem_80_89 <- dem_80_89 |>
+  # Moves demographic data into rows with age group and sub populations as columns
+  pivot_longer(cols=contains("years"),
+               names_to = "AGE_GROUP",
+               values_to = "SUB_POP_temp") |>
+  group_by(YEAR, STATE, AGE_GROUP, SEX, RACE) |>
+  summarize(SUB_POP = sum(SUB_POP_temp), .groups="drop")
+```
+
+Wrangling the 90s data took a few more steps in assigning column names, adding columns, and adding age groups, but we ended up with the same outcome of creating specific race, sex, age group, and sub population columns from the existing columns and removing any redundant columns afterwards.
+```{r}
+# Make the 90s data into a data frame
+dem_90_99 <- dem_90_99 |>
+  map_df(bind_rows)
+# Create column names
+colnames(dem_90_99) <- c("YEAR", "STATEFP", "Age", "NH_W_M", "NH_W_F", "NH_B_M",
+                         "NH_B_F", "NH_AIAN_M", "NH_AIAN_F", "NH_API_M", "NH_API_F",
+                         "H_W_M", "H_W_F", "H_B_M", "H_B_F", "H_AIAN_M", "H_AIAN_F",
+                         "H_API_M", "H_API_F")
+dem_90_99 <- dem_90_99 |>
+  drop_na() |> # Drop NA rows
+  # Add columns to create total demo/pop columns
+  mutate(W_M = NH_W_M + H_W_M, W_F = NH_W_F + H_W_F,
+         B_M = NH_B_M + H_B_M, B_F = NH_B_F + H_B_F,
+         AIAN_M = NH_AIAN_M + H_AIAN_M, AIAN_F = NH_AIAN_F + H_AIAN_F,
+         API_M = NH_API_M + H_API_M, API_F = NH_API_F + H_API_F) |>
+  select(-starts_with("NH_"), -starts_with("H_")) # Drops columns no longer needed
+
+dem_90_99 <- dem_90_99 |>
+  # Create column for age group
+  mutate(AGE_GROUP = cut(Age,
+                         breaks = seq(0, 90, by=5),
+                         right = FALSE, labels = pull(distinct(dem_77_79,AGE_GROUP), AGE_GROUP))) |>
+  select(-Age) |> # Delete age column as we now have age groups
+  # Moves demographic data into rows with race and sub populations as columns
+  pivot_longer(cols = c(starts_with("W_"),
+                        starts_with("B_"),
+                        starts_with("AIAN_"),
+                        starts_with("API_")),
+               names_to = "RACE",
+               values_to = "SUB_POP_temp") |>
+  # Create sex and race columns
+  mutate(SEX = case_when(str_detect(RACE, "_M") ~ "Male",
+                         TRUE ~ "Female"),
+         RACE = case_when(str_detect(RACE, "W_") ~ "White",
+                          str_detect(RACE, "B_") ~ "Black",
+                          TRUE ~ "Other"))
+dem_90_99 <- dem_90_99 |>
+  # Cleans up columns
+  left_join(STATE_FIPS, by = "STATEFP") |>
+  select(-STATEFP) |>
+  group_by(YEAR, STATE, AGE_GROUP, SEX, RACE) |>
+  summarize(SUB_POP = sum(SUB_POP_temp), .groups="drop")
+```
+
+Wrangling the 00s data was simpler than the 90s data but still had some additional steps of dropping unneeded columns and filtering for desired data to create specific race, sex, age group, and sub population columns.
+```{r}
+# Make the 00s data into a data frame
+dem_00_10 <- dem_00_10 |>
+  map_df(bind_rows)
+dem_00_10 <- dem_00_10 |>
+  select(-ESTIMATESBASE2000,-CENSUS2010POP) |> # Delete columns not needed
+  # Filter for desired data
+  filter(NAME != "United States",
+         SEX != 0,
+         RACE != 0,
+         AGEGRP != 0, 
+         ORIGIN == 0) |>
+  select(-REGION, -DIVISION, -ORIGIN, -STATE) |> # Delete columns not needed
+  # Simplify column names
+  rename("STATE" = NAME,
+         "AGE_GROUP" = AGEGRP)
+dem_00_10 <- dem_00_10 |>
+  # Create sex, race, and age group columns
+  mutate(SEX = factor(SEX, levels = 1:2, labels = c("Male", "Female")),
+         RACE = factor(RACE, levels = 1:6, labels = c("White", "Black", rep("Other",4))),
+         AGE_GROUP = factor(AGE_GROUP, levels = 1:18,
+                            labels = pull(distinct(dem_77_79,AGE_GROUP), AGE_GROUP)))
+dem_00_10 <- dem_00_10 |>
+  # Moves demographic data into rows with race and sub populations as columns
+  pivot_longer(cols=contains("ESTIMATE"), names_to = "YEAR", values_to = "SUB_POP_temp") |>
+   mutate(YEAR = str_sub(YEAR, start=-4),
+          YEAR = as.numeric(YEAR)) |> 
+  group_by(YEAR, AGE_GROUP, STATE, SEX, RACE) |>
+  summarize(SUB_POP = sum(SUB_POP_temp), .groups = "drop")
+```
+
+To get our total population data, we sum from our demographic data starting with the 70s.
+```{r}
+# 70s population data
+pop_77_79 <- dem_77_79 |>
+  # Add sub populations by year and state to get total population
+  group_by(YEAR, STATE) |>
+  summarize(TOT_POP = sum(SUB_POP), .groups = "drop") 
+```
+
+Similarly, we get our population data for 80s, 90s, and 00s.
+```{r}
+# 80s population data
+pop_80_89 <- dem_80_89 |>
+  group_by(YEAR, STATE) |>
+  summarize(TOT_POP = sum(SUB_POP), .groups = "drop")
+
+# 90s population data
+pop_90_99 <- dem_90_99 |>
+  group_by(YEAR, STATE) |>
+  summarize(TOT_POP = sum(SUB_POP), .groups = "drop")
+
+# 00s population data
+pop_00_10 <- dem_00_10 |>
+  group_by(YEAR, STATE) |>
+  summarize(TOT_POP = sum(SUB_POP), .groups = "drop")
+```
+
+We now need to combine our demographic and population data for each decade.
+```{r}
+# Combine 70s demographic and population data
+dem_77_79 <- dem_77_79 |>
+  # Join data by year and state
+  left_join(pop_77_79, by = c("YEAR", "STATE")) |> 
+  # Create percent of total population column
+  mutate(PERC_SUB_POP = (SUB_POP/TOT_POP)*100) |>
+  select(-SUB_POP, -TOT_POP) |> # Delete sub and total population columns since they are now redundant
+    mutate(SEX = str_to_title(SEX)) # Title sex column
+
+# Combine 80s data similarly to 70s
+dem_80_89 <- dem_80_89 |>
+  left_join(pop_80_89, by = c("YEAR", "STATE")) |>
+  mutate(PERC_SUB_POP = (SUB_POP/TOT_POP)*100) |>
+  select(-SUB_POP, -TOT_POP) |>
+  mutate(SEX = str_to_title(SEX))
+
+# Combine 90s data similarly to 70s
+dem_90_99 <- dem_90_99 |>
+  left_join(pop_90_99, by = c("YEAR", "STATE")) |>
+  mutate(PERC_SUB_POP = (SUB_POP/TOT_POP)*100) |>
+  select(-SUB_POP, -TOT_POP)
+
+# Combine 00s data similarly to 70s
+dem_00_10 <- dem_00_10 |>
+  left_join(pop_00_10, by = c("YEAR", "STATE")) |>
+  mutate(PERC_SUB_POP = (SUB_POP/TOT_POP)*100) |>
+ select(-SUB_POP, -TOT_POP)
+```
+
+We can now combine all of our data for each decade into one data set.
+```{r}
+dem <- bind_rows(dem_77_79,
+                 dem_80_89,
+                 dem_90_99,
+                 dem_00_10)
+```
+
+Having finished the general demographic data, we moved onto the Donahue demographic data. The wrangled data set results in containing year, state, demographic variable, and value columns.
+```{r}
+# Create age groups
+DONOHUE_AGE_GROUPS <- c("15 to 19 years",
+                        "20 to 24 years",
+                        "25 to 29 years",
+                        "30 to 34 years",
+                        "35 to 39 years")
+dem_DONOHUE <- dem |>
+  # Filter for males and desired age groups
+  filter(AGE_GROUP %in% DONOHUE_AGE_GROUPS,
+               SEX == "Male") |>
+  # Combine age groups
+  mutate(AGE_GROUP = fct_collapse(AGE_GROUP, "20 to 39 years"=c("20 to 24 years",
+                                                                "25 to 29 years",
+                                                                "30 to 34 years",
+                                                                "35 to 39 years")))
+dem_DONOHUE <- dem_DONOHUE |>
+  # Clean up text by replacing spaces with _
+  mutate(AGE_GROUP = str_replace_all(string = AGE_GROUP, 
+                                     pattern = " ", 
+                                     replacement = "_")) |>
+  # Add percent sub population values
+  group_by(YEAR, STATE, RACE, SEX, AGE_GROUP) |>
+  summarize(PERC_SUB_POP = sum(PERC_SUB_POP), .groups = "drop")
+dem_DONOHUE <- dem_DONOHUE |>
+  # Combine race, sex, and age group columns
+  unite(col = "VARIABLE", RACE, SEX, AGE_GROUP, sep = "_") |>
+  # Rename value column
+  rename("VALUE" = PERC_SUB_POP)
+```
+
+We also wrangled the Lott data similarly to the Donahue data, also containing year, state, demographic variable, and value columns.
+```{r}
+# Create age groups
+LOTT_AGE_GROUPS_NULL <- c("Under 5 years",
+                          "5 to 9 years")
+dem_LOTT <- dem |>
+  filter(!(AGE_GROUP %in% LOTT_AGE_GROUPS_NULL) )|>  # Filter for desired age groups
+  # Combine age groups
+  mutate(AGE_GROUP = fct_collapse(AGE_GROUP,
+                                  "10 to 19 years"=c("10 to 14 years", "15 to 19 years"),
+                                  "20 to 29 years"=c("20 to 24 years", "25 to 29 years"),
+                                  "30 to 39 years"=c("30 to 34 years", "35 to 39 years"),
+                                  "40 to 49 years"=c("40 to 44 years", "45 to 49 years"),
+                                  "50 to 64 years"=c("50 to 54 years", "55 to 59 years",
+                                                     "60 to 64 years"),
+                                  "65 years and over"=c("65 to 69 years", "70 to 74 years", 
+                                                        "75 to 79 years", "80 to 84 years",
+                                                        "85 years and over")))
+dem_LOTT <- dem_LOTT |>
+  # Clean up text by replacing spaces with _
+  mutate(AGE_GROUP = str_replace_all(AGE_GROUP, " ", "_")) |>
+  # Combine race, sex, and age group columns
+  group_by(YEAR, STATE, RACE, SEX, AGE_GROUP) |>
+  summarize(PERC_SUB_POP = sum(PERC_SUB_POP), .groups = "drop") |>
+  unite(col = "VARIABLE", RACE, SEX, AGE_GROUP, sep = "_") |>
+  # Rename value column
+  rename("VALUE" = PERC_SUB_POP)
+```
+
+Lastly, we will combine our population data.
+```{r}
+population_data <- bind_rows(pop_77_79,
+                             pop_80_89,
+                             pop_90_99,
+                             pop_00_10)
+population_data <- population_data |>
+  # Rename columns to population and value
+  mutate(VARIABLE = "Population") |>
+  rename("VALUE" = TOT_POP)
+```
+
+
+Next, we begin to wrangle with the ps_data dataset by removing territories from our data.
+
+```{r}
+# removes the specified territory abbreviations from our data
+state_of_interest_NULL <- c("AS", "GM", "CZ", "FS", "MP", "OT", "PR", "VI")
+ps_data <- ps_data |>
+  filter(!(state_abbr %in% state_of_interest_NULL))
+```
+
+To make the state abbreviations more readable, we create a tibble containing the state's abbreviations and its corresponding name.
+
+```{r}
+# creates a tibble that stores the state abbreviation and the state name
+state_abb_data <- tibble("state_abbr" = state.abb, "STATE" = state.name)
+state_abb_data <- state_abb_data |>
+  # replaces "NE" with "NB"
+  mutate(state_abbr = str_replace(string = state_abbr, 
+                                  pattern = "NE", 
+                                  replacement = "NB")) |>
+  # adds DC / District of Columbia
+  add_row(state_abbr = "DC", STATE = "District of Columbia")
+```
+
+We use the tibble from above to create a new column in 'ps_data' indicating the name of the state.
+
+```{r}
+ps_data <- ps_data |> 
+  # joins together each observation with the state it took place in
+  left_join(state_abb_data, by = "state_abbr") |>
+  # excludes state_abbr column
+  select(-state_abbr) |> 
+  # renames our columns
+  rename(YEAR = "data_year",
+         VALUE = "officer_state_total") |>
+  # creates a new column
+  mutate(VARIABLE = "officer_state_total")
+ps_data
+```
+
+Next we need to scale our data. However, this is currently not possible without wrangled data from another student. Here, we want to mutate a new column called 'VALUE' which scales our data based on our population data. 
+
+```{r}
+# creates a new variable that stores population_data except for the variable column
+denominator_temp <- population_data |>
+  select(-VARIABLE) |>
+  # renames VALUE column to Population_temp
+  rename("Population_temp"=VALUE)
+
+ps_data <- ps_data |>
+  left_join(denominator_temp, by=c("STATE","YEAR")) |>
+  # applies scaling
+  mutate(VALUE = (VALUE * 100000) / Population_temp) |>
+  mutate(VARIABLE = "police_per_100k_lag") |>
+  select(-Population_temp)
+```
+
+Lastly, we'll wrangle our unemployment data. Below, we extract the names of the states from the unemployment rate dataset. 
+
+```{r}
+# pulls out names for each tibble
+ue_rate_names <- list.files(recursive = TRUE,
+                            path = "data/raw/Unemployment",
+                            pattern = "*.xlsx",
+                            full.names = TRUE) %>%
+  map(~read_xlsx(., range = "B4:B6")) %>%
+  map(., c(1,2)) |>
+  unlist()
+# assigns name to each tibble
+names(ue_rate_data) <- ue_rate_names
+```
+
+Finally, we add back the names into our data so we can see which state corresponds to which year and unemployment rate. 
+
+```{r}
+ue_rate_data <- ue_rate_data |>
+  # puts each tibble together into one, and keeps track which is which by state
+  map_df(bind_rows, .id = "STATE") |>
+  # chooses which columns to keep
+  select(STATE, Year, Annual) |>
+  # renames columns
+  rename("YEAR" = Year,
+         "VALUE" = Annual) |>
+  # adds new column
+  mutate(VARIABLE = "Unemployment_rate")
+ue_rate_data
+```
+
+Poverty, Violent Crime & Right to Carry Data:
+
+Loading in Poverty Data
+```{r}
+poverty_rate_data <- read_xls("data/raw/Poverty/hstpov21.xls", skip=2) # skipping first two lines
+head(poverty_rate_data)
+```
+
+Loading in Violent Crime Data
+```{r}
+#skips first two lines and skips empty rows.
+crime_data <- read_lines("data/raw/Crime/CrimeStatebyState.csv", 
+                         skip = 2, 
+                         skip_empty_rows = TRUE)
+head(crime_data)
+```
+
+Loading in Right to Carry Data
+```{r}
+DAWpaper <- pdf_text("data/raw/w23510.pdf")
+head(DAWpaper[1])
+```
+
+After we loaded in our data, we can start wrangling it.
+
+Poverty Rate:
+Taking a look on what it looks like now.
+```{r}
+poverty_rate_data
+```
+
+Adding column names, filtering out the states that aren't states, and renaming D.C. to District of Columbia to keep it consistent.
+```{r}
+colnames(poverty_rate_data) <- c("STATE", "Total", "Number", "Number_se",
+                                 "Percent", "Percent_se")
+
+poverty_rate_data <- poverty_rate_data |>
+  filter(STATE != "STATE") |> 
+  mutate(length_state = map_dbl(STATE, str_length)) |> # determine how long string in "STATE" column is
+  filter(length_state < 100) |> # filter to only include possible state lengths
+  mutate(STATE = str_replace(STATE, pattern = "D.C.", 
+                              replacement = "District of Columbia" ))
+```
+
+Getting year information for each given year, getting the year information for every row, filter out to get the state and year
+```{r}
+year_values <- poverty_rate_data |> #Getting year information for each given year.
+  filter(str_detect(STATE, "[:digit:]")) |>
+  distinct(STATE)
+
+year_values <- rep(pull(year_values, STATE), each = 52) # repeat values from STATE column 52 times each
+
+poverty_rate_data <- poverty_rate_data |>
+  mutate(year_value = year_values) |>
+  select(-length_state) |>
+  filter(str_detect(STATE, "[:alpha:]"))
+```
+
+Getting it into its final form of state and year.
+```{r}
+poverty_rate_data <- poverty_rate_data |>
+  filter(year_value != "2017") |> #removing the year 2017
+  filter(year_value != "2013 (18)") |>
+  mutate(YEAR = str_sub(year_value, start = 1, end=4)) |>
+  select(-c(Number, Number_se, Percent_se, Total, year_value)) |>
+  rename("VALUE" = Percent) |>
+  mutate(VARIABLE = "Poverty_rate",
+         YEAR = as.numeric(YEAR),
+         VALUE = as.numeric(VALUE))
+poverty_rate_data
+```
+
+Violent Crime:
+
+Looking at current crime_data
+```{r}
+head(crime_data)
+```
+
+In our crime data, in every cycle there are 3 rows that we want to skip over. Skip over those rows and delete them from out dataset.
+```{r}
+crime_data <- crime_data[-((str_which(crime_data, "The figures shown in this column for the offense of rape were estimated using the legacy UCR definition of rape")-1): length(crime_data)+1)]
+
+n_rows <- 2014-1977+1 # determine how many rows there are for each state
+rep_cycle <- 4 + n_rows
+rep_cycle_cut <- 2 + n_rows
+colnames_crime <- (crime_data[4])
+
+# specify which rows are to be deleted based on the file format
+delete_rows <- c(seq(from = 2, 
+                       to = length(crime_data),  
+                       by = rep_cycle),
+                 seq(from = 3, 
+                       to = length(crime_data),
+                       by = rep_cycle), 
+                 seq(from = 4,
+                       to = length(crime_data),
+                       by = rep_cycle))
+sort(delete_rows) # which rows are to be deleted
+```
+
+Taking a look of what we would be deleting from the previous code cell.
+```{r}
+# convince yourself you did it right
+# should these rows be deleted?
+crime_data[44:46]
+```
+
+Deleting the rows and formatting the data such that we get information for each state.
+```{r}
+crime_data <- crime_data[-delete_rows] #deleting rows
+
+# extract state labels from data
+state_labels <- crime_data[str_which(crime_data, "Estimated crime in ")]
+state_labels <- str_remove(state_labels, pattern = "Estimated crime in ")
+state_label_order <- rep(state_labels, each = n_rows) # repeat n_rows times
+
+crime_data <- crime_data[-str_which(crime_data, "Estimated crime")]
+head(crime_data)
+```
+
+Removing an irrelevant comma column and adding column names to columns in our data.
+```{r}
+crime_data_sep <- read_csv(I(crime_data), col_names = FALSE) |> 
+  select(-X6) # remove random extra-comma column
+
+#getting this error if i didnt add this line
+#Error: Can't recycle `STATE` (size 1938) to match `..2` (size 1939)
+crime_data_sep <- na.omit(crime_data_sep) #single null giving an errow
+
+# get column names for later
+colnames(crime_data_sep) <- c("Year", 
+                              "Population", 
+                              "Violent_crime_total",
+                              "Murder_and_nonnegligent_Manslaughter",
+                              "Legacy_rape",
+                              "Revised_rape", 
+                              "Robbery",
+                              "Aggravated_assault")
+# add column names in
+crime_data_sep <- bind_cols(STATE = state_label_order, crime_data_sep)
+```
+
+Creating and renaming columns and selecting the ones we would want for our final dataset.
+```{r}
+crime_data <- crime_data_sep |>
+  mutate(VARIABLE = "Viol_crime_count") |>
+  rename("VALUE" = Violent_crime_total) |>
+  rename("YEAR" = Year) |>
+  select(YEAR,STATE, VARIABLE, VALUE)
+
+crime_data
+```
+
+Right to Carry:
+
+Seeing what it looks like currently:
+```{r}
+head(DAWpaper[1])
+```
+
+The data that we want is located in the 62nd position
+```{r}
+DAWpaper_p_62 <- DAWpaper[[62]]
+str(DAWpaper_p_62, nchar.max = 1000) # see data
+```
+
+Getting into the format that we could use.
+```{r}
+p_62 <- DAWpaper_p_62 |>
+  str_split("\n") |>
+  unlist() |>
+  as_tibble() |>
+  slice(-(1:2)) |> 
+  rename(RTC = value) |>
+  slice(-c(53:54)) |>  # physical page 60 marking; empty line removal
+  mutate(RTC = str_replace_all(RTC, "\\s{40,}", "|N/A|"),
+         RTC = str_trim(RTC, side = "left"),
+         RTC = str_replace_all(RTC, "\\s{2,15}", "|"))
+
+head(p_62)
+```
+
+Combine rows together and giving our data column names. Removing rows that doesn't have data we need.
+```{r}
+p_62 <- pull(p_62, RTC) |>
+  str_split( "\\|{1,}")  # split data on "|" symbol
+
+# get the tibble!
+p_62 <- as_tibble(do.call(rbind, p_62)) # rbind and not bind_cols here b/c we have no column names yet
+colnames(p_62) <- c("STATE",
+                    "E_Date_RTC",
+                    "Frac_Yr_Eff_Yr_Pass",
+                    "RTC_Date_SA")
+
+p_62 <- p_62 |>
+  slice(-c(1, 53:nrow(p_62))) # remove unecessary rows
+```
+
+Formatting some columns to however we want and selecting relevant columns for future dataset. New column RTC_LAW_YEAR where values are changed to numeric and 0's are set to infinity. This is necessary when we combine our data and when we compare it to the YEAR column.
+```{r}
+RTC <- p_62 |> 
+  select(STATE, RTC_Date_SA) |>
+  rename(RTC_LAW_YEAR = RTC_Date_SA) |>
+  mutate(RTC_LAW_YEAR = as.numeric(RTC_LAW_YEAR)) |>
+  mutate(RTC_LAW_YEAR = case_when(RTC_LAW_YEAR == 0 ~ Inf,
+                              TRUE ~ RTC_LAW_YEAR))
+
+RTC
+```
+
+Now that we wrangled our data to their proper formats, we will combine all our data together.
+
+Our first dataframe, DONOHUE.
+Combining the rows together of different datasets.
+```{r}
+DONOHUE_DF <- bind_rows(dem_DONOHUE,
+                        ue_rate_data,
+                        poverty_rate_data,
+                        crime_data,
+                        population_data,
+                        ps_data)
+DONOHUE_DF
+```
+
+Tranforming it into a wide format. Then we see what it looks like.
+```{r}
+DONOHUE_DF <- DONOHUE_DF |>
+  pivot_wider(names_from = "VARIABLE",
+              values_from = "VALUE")
+
+#getting a glimpse of what it looks like
+DONOHUE_DF |>
+  slice_sample(n = 10) |>
+  glimpse()
+```
+
+We combine our RTC dataframe to the main dataframe. and create a new column RTC_LAW that is true when the YEAR is greater than or equal to RTC_LAW_YEAR.
+```{r}
+# add in RTC data!
+DONOHUE_DF <- DONOHUE_DF |>
+  left_join(RTC , by = c("STATE")) |>
+  mutate(RTC_LAW = case_when(YEAR >= RTC_LAW_YEAR ~ TRUE,
+                              TRUE ~ FALSE)) |>
+ drop_na() # drop rows with missing information
+DONOHUE_DF |>
+  slice_sample(n = 10) |>
+  glimpse()
+```
+
+Filtering our data such that RTC laws were adopted between 1980-2010.
+```{r}
+# filter to only data where RTC laws were adopted between 1980-2010
+# have crime data pre- and post-adotion this way
+baseline_year <- min(DONOHUE_DF$YEAR)
+censoring_year <- max(DONOHUE_DF$YEAR)
+DONOHUE_DF <- DONOHUE_DF |>
+  mutate(TIME_0 = baseline_year,
+         TIME_INF = censoring_year) |>
+  filter(RTC_LAW_YEAR > TIME_0)
+
+DONOHUE_DF
+```
+
+We add a new column to represent violent crime rate, and the rate and population on a log scale.
+```{r}
+# calculate violent crime rate; put population/crime on log scale
+DONOHUE_DF <- DONOHUE_DF |>
+  mutate(Viol_crime_rate_1k = (Viol_crime_count*1000)/Population,
+         Viol_crime_rate_1k_log = log(Viol_crime_rate_1k),
+         Population_log = log(Population))
+
+DONOHUE_DF
+```
+
+Creating our second dataset, LOTT.
+
+Similar process to DONOHUE, combining rows using dem_LOTT, transforming it to a wide format, joining RTC data, and creating a new column RTC_LAW.
+```{r}
+LOTT_DF <- bind_rows(dem_LOTT,
+                     ue_rate_data,
+                     poverty_rate_data,
+                     crime_data,
+                     population_data,
+                     ps_data) |>
+  pivot_wider(names_from = "VARIABLE",
+              values_from = "VALUE") |>
+  left_join(RTC , by = c("STATE")) |>
+  mutate(RTC_LAW = case_when(YEAR >= RTC_LAW_YEAR ~ TRUE,
+                              TRUE ~ FALSE)) |>
+   drop_na()
+```
+
+
+Filtering our data such that RTC laws were adopted between 1980-2010.
+```{r}
+baseline_year <- min(LOTT_DF$YEAR)
+censoring_year <- max(LOTT_DF$YEAR)
+
+LOTT_DF <- LOTT_DF |>
+  mutate(TIME_0 = baseline_year,
+         TIME_INF = censoring_year) |>
+  filter(RTC_LAW_YEAR > TIME_0)
+```
+
+
+Similarly, we add a few new columns to represent violent crime rate, and the rate and population on a log scale.
+```{r}
+LOTT_DF <- LOTT_DF |>
+  mutate(Viol_crime_rate_1k = (Viol_crime_count*1000)/Population,
+         Viol_crime_rate_1k_log = log(Viol_crime_rate_1k),
+         Population_log = log(Population))
+
+LOTT_DF
+```
+
+### Exploratory Data Analysis
+
+We can see that since 1980, the population in the United States has been steadily increasing with a surge from 1999 to 2010. Otherwise, the population has just been a steady increase.
+
+```{r}
+# groups data by how population has changed over the years
+df <- DONOHUE_DF |>
+  group_by(YEAR) |>
+  summarise(Population = sum(Population))
+
+# plots the data with year on x-axis and population on y-axis
+# uses a line graph to show change over time
+ggplot(df, aes(x = YEAR, y = Population)) +
+  geom_line() +
+  scale_x_continuous(
+    breaks = seq(1980, 2010, by = 1),
+    limits = c(1980, 2010),
+    labels = c(seq(1980, 2010, by = 1))
+  ) +
+  labs(
+    title = "Population has steadily increased",
+    x = "Year",
+    y = "Population"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title.position = "plot")
+
+```
+
+In the graph below, we can see how the violent crime rate has been fluctuating over time. Since 1980 until 1983, we notice a slow decline in the violent crime rate getting as low as ~6.3%, however; since 1983, there has been a steady, sharp increase in violent crime rates peaking in the year 1991 with a violent crime rate of ~6.64%. Since 1991, there has been a steady decline in the violent crime rate, lowering to as low as ~6.1% by the year 2010.
+
+```{r}
+# groups data by crime count per 100,000 people
+df <- DONOHUE_DF |>
+  group_by(YEAR) |>
+  summarize(
+    Viol_crime_count = sum(Viol_crime_count),
+    Population = sum(Population),
+    .groups = "drop"
+  ) |>
+  mutate(Viol_crime_rate_100k_log = log((Viol_crime_count * 100000) / Population))
+
+# plots the year on the x-axis and violent crime rates per 100k people on y-axis
+# uses a line graph to show change over time
+df |>
+  ggplot(aes(x = YEAR, y = Viol_crime_rate_100k_log)) +
+  geom_line() +
+  scale_x_continuous(
+    breaks = seq(1980, 2010, by = 1),
+    limits = c(1980, 2010),
+    labels = c(seq(1980, 2010, by = 1))
+  ) +
+  scale_y_continuous(
+    breaks = seq(5.75, 6.75, by = 0.25),
+    limits = c(5.75, 6.75)
+  ) +
+  labs(
+    title = "Crime rates fluctuate over time",
+    x = "Year",
+    y = "ln(violent crimes per 100,000 people)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90), plot.title.position = "plot")
+```
+
+In the graph below, we see how the violent crime rate changes over time between the different states. The most noticable pattern is that the crime rate seems to stay consistent between most states from 1980 until 2010. However, there are some exceptions such as the blue line at the bottom of the graph which steadily increases from 1980 to 2010.
+
+```{r, warning=FALSE}
+# groups data by crime count per 100k people
+# also plots the violent crime rate change over time for each of the states
+# plots year on the x-axis and crime rate per 100k people on the y-axis
+p <- DONOHUE_DF |>
+  mutate(Viol_crime_rate_100k_log = log((Viol_crime_count * 100000) / Population)) |>
+  ggplot(aes(x = YEAR, y = Viol_crime_rate_100k_log, color = STATE)) +
+  geom_point(size = 0.5) +
+  geom_line(aes(group = STATE),
+    size = 0.5,
+    show.legend = FALSE
+  ) +
+  geom_text_repel(data = DONOHUE_DF |>
+      mutate(Viol_crime_rate_100k_log = log((Viol_crime_count * 100000) / Population)) |>
+      filter(YEAR == last(YEAR)),
+      aes(label = STATE,x = YEAR, y = Viol_crime_rate_100k_log),
+      size = 3, alpha = 1, nudge_x = 1, direction = "y",
+      hjust = 1, vjust = 1, segment.size = 0.25, segment.alpha = 0.25,
+      force = 1, max.iter = 9999)
+
+p + 
+  guides(color = "none") +
+  scale_x_continuous(
+    breaks = seq(1980, 2015, by = 1),
+    limits = c(1980, 2015),
+    labels = c(seq(1980, 2010, by = 1), rep("", 5))
+  ) +
+  scale_y_continuous(
+    breaks = seq(3.5, 8.5, by = 0.5),
+    limits = c(3.5, 8.5)
+  ) +
+  labs(
+    title = "States have different levels of crime",
+    x = "Year", y = "ln(violent crimes per 100,000 people)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90), plot.title.position = "plot")
+```
+
+In the graph below, we observe how the police presence has been increasing over time per 100,000 people since 1980 with only a few fluctuations from 1996 to 2010. We can see that police presence has increased significantly from sub-10,000 to as high as 16,000.
+
+```{r}
+# groups data by police presence per 100k people
+# plots the police presence over time per 100k people since 1980
+# year is on the x-axis and police presence per 100k people on the y-axis
+p <- DONOHUE_DF |>
+  group_by(YEAR) |>
+  summarise(Police = sum(police_per_100k_lag)) |> 
+  ggplot(aes(x = YEAR, y = Police)) +
+  geom_line() +
+  scale_x_continuous(
+    breaks = seq(1980, 2010, by = 1),
+    limits = c(1980, 2010),
+    labels = c(seq(1980, 2010, by = 1))
+  ) 
+p +
+  labs(
+    title = "Police Presence has increased over time with fluctuations",
+    x = "Year",
+    y = "Police Presence per 100K people"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title.position = "plot")
+```
+
+### Data Analysis
+
+To begin our analysis in determining the effect of multicollinearity in our data set, we decided to do panel linear regression models. We started with the Donohue data and needed to get it in a form that can go through our panel linear model function.
+```{r}
+d_panel_DONOHUE <- pdata.frame(DONOHUE_DF, index = c("STATE", "YEAR"))
+class(d_panel_DONOHUE)
+```
+
+Now that our data is ready, we ran a panel linear regression model on the Donohue data and summarized it in a tibble.
+```{r}
+# Run Panel Linear Regression
+DONOHUE_OUTPUT <- plm(Viol_crime_rate_1k_log ~
+                      RTC_LAW +
+                      White_Male_15_to_19_years +
+                      White_Male_20_to_39_years +
+                      Black_Male_15_to_19_years +
+                      Black_Male_20_to_39_years +
+                      Other_Male_15_to_19_years +
+                      Other_Male_20_to_39_years +
+                      Unemployment_rate +
+                      Poverty_rate +
+                      Population_log +
+                      police_per_100k_lag,
+                      effect = "twoways",
+                      model = "within",
+                      data = d_panel_DONOHUE)
+DONOHUE_OUTPUT_TIDY <- tidy(DONOHUE_OUTPUT, conf.int = 0.95) # Clean up output
+DONOHUE_OUTPUT_TIDY$Analysis <- "Analysis Donohue" # Add column showing the observations came from the Donahue data set
+DONOHUE_OUTPUT_TIDY # Display results
+```
+
+We next prepared our Lott data for a panel linear regression as well by first determining our variables from the Lott data set, wrangling the data for the panel linear model function, and running the panel linear regression.
+```{r}
+# Determine variables from data set
+LOTT_variables <- LOTT_DF |>
+  # Select desired columns
+  select(RTC_LAW,
+         contains(c("White", "Black", "Other")),
+         Unemployment_rate,
+         Poverty_rate,
+         Population_log,
+         police_per_100k_lag) |>
+  colnames() # Extract the column names
+LOTT_fmla <- as.formula(paste("Viol_crime_rate_1k_log ~", paste(LOTT_variables, collapse = " + ") # Assign variables in form for plm function
+))
+# Prepare data
+d_panel_LOTT <- pdata.frame(LOTT_DF, index = c("STATE", "YEAR"))
+# Run panel linear regression
+LOTT_OUTPUT <- plm(LOTT_fmla,
+                   model = "within",
+                   effect = "twoways",
+                   data = d_panel_LOTT
+)
+LOTT_OUTPUT_TIDY <- tidy(LOTT_OUTPUT, conf.int = 0.95)
+LOTT_OUTPUT_TIDY$Analysis <- "Analysis Lott"
+LOTT_OUTPUT_TIDY
+```
+
+Now that we have ran a regression on both the Donahue and Lott data, we want to look at a comparison between the two to gather further insights.
+```{r}
+# Combine the data into a single tibble with only the RTC_LAWTRUE row
+comparing_analyses <- DONOHUE_OUTPUT_TIDY |>
+  bind_rows(LOTT_OUTPUT_TIDY) |>
+  filter(term == "RTC_LAWTRUE")
+comparing_analyses
+
+# Plot confidence intervals of both Donahue and Lott data
+ggplot(comparing_analyses) +
+  geom_point(aes(x = Analysis, y = estimate)) +
+  geom_errorbar(aes(x = Analysis, ymin = conf.low, ymax = conf.high), width = 0.25) +
+  geom_hline(yintercept = 0, color = "red") +
+  scale_y_continuous(
+    breaks = seq(-0.2, 0.2, by = 0.05),
+    labels = seq(-0.2, 0.2, by = 0.05),
+    limits = c(-0.2, 0.2)
+  ) +
+  # Add arrows
+  geom_segment(aes(x = 1, y = 0.125, xend = 1, yend = 0.175),
+    arrow = arrow(angle = 45, ends = "last", type = "open"),
+    size = 2, color = "green", lineend = "butt", linejoin = "mitre"
+  ) +
+  geom_segment(aes(x = 2, y = -0.125, xend = 2, yend = -0.175),
+    arrow = arrow(angle = 45, ends = "last", type = "open"),
+    size = 2, color = "red", lineend = "butt", linejoin = "mitre"
+  ) +
+  # Set theme
+  theme_minimal() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text = element_text(size = 8, color = "black")
+  ) +
+  # Add labels
+  labs(
+    title = "Effect estimate on ln(violent crimes per 100,000 people)",
+    y = "  Effect estimate (95% CI)"
+  )
+```
+
+From this plot, we see that the means and confidence intervals for the Donohue and Lott data differ notably. In fact, the coefficient for Right To Carry (RTC) Laws in the Donohue analysis is positive while it is negative in the Lott analysis. The data seems to be contradictory. The differences between the data is Donohue contains males only, ages 15 to 39. Lott contains males and females, ages 10-65+. These are some interesting differences and seeing the value of the coefficients for RTC laws in both data sets, we decided to test for multicollinearity. 
+
+To begin our diagnosis, we started plotting a pairplot for the Donohue data set.
+```{r}
+DONOHUE_DF |>
+  # Select necessary columns for our analysis
+  select(RTC_LAW,
+         Viol_crime_rate_1k_log,
+         Unemployment_rate,
+         Poverty_rate,
+         Population_log) |>
+  # Plot pairplot
+  ggpairs(columns = c(2:5),
+          lower = list(continuous = wrap("smooth_loess",
+                                         color = "red",
+                                         alpha = 0.5,
+                                         size = 0.1)))
+```
+Seeing the results from the pairplot, we decided to take a deeper dive in our visualizations by creating heat maps for both the Donohue and Lott data sets to get better insights on if collinearity seems to appear within race and age.
+```{r}
+## Donahue data
+# Extract correlation from data set
+cor_DONOHUE_dem <- cor(DONOHUE_DF |> select(contains("_years"))) 
+# Plot heat map
+ggcorrplot(cor_DONOHUE_dem,
+  tl.cex = 6,
+  hc.order = TRUE,
+  colors = c(
+    "red",
+    "white",
+    "red"
+  ),
+  outline.color = "transparent", # Set color opacity
+  title = "Correlation Matrix, Analysis Donohue", # Set title
+  legend.title = expression(rho) # Set legend title
+)
+```
+
+There seems to be a relatively strong correlation with race, regardless of age as the correlation remains close to one (red squares) within race and accross age groups. This can suggest collinearity because there is a strong relationship for race.
+
+```{r}
+## Lott data
+# Extract correlation from data set
+cor_LOTT_dem <- cor(LOTT_DF |> select(contains("_years")))
+# Plot heat map
+corr_mat_LOTT <- ggcorrplot(cor_LOTT_dem,
+  tl.cex = 6,
+  hc.order = TRUE,
+  colors = c(
+    "red",
+    "white",
+    "red"
+  ),
+  outline.color = "transparent", # Set color opacity
+  title = "Correlation Matrix, Analysis Lott", # Set title
+  legend.title = expression(rho) # Set legend title
+)
+corr_mat_LOTT
+```
+
+The Donohue data set only shows observation for males, so we are not able to compare across gender; however, the Lott data set does. We can see similar conclusions in that there is a strong correlation within race, regardless of gender for Black and Other racial groups, as seen by the big red squares in the middle and top right of the chart. With Whites, there is still a relatively strong correlation within race, across gender and age but not as strong as the other racial groups. The Lott data compliments the Donohue data in concluding that there may be collinearity due to our findings with race. 
+
+From our initial analysis we see that there may be multicollinearity, so we decided to test for it via Bootstrapping. We began by splitting the data.
+```{r}
+set.seed(124) # Set seed for RNG state
+DONOHUE_splits <- d_panel_DONOHUE |> loo_cv() # Leave one out cross validation
+DONOHUE_splits
+```
+
+We next pulled the split data.
+```{r}
+DONOHUE_subsets <- map(pull(DONOHUE_splits, splits), training)
+glimpse(DONOHUE_subsets[[1]])
+```
+
+To run our bootstrapping, we created a function for Donahue data for panel linear regression to make our lives easier.
+```{r}
+# Create function for Donahue data
+fit_nls_on_bootstrap_DONOHUE <- function(subset) {
+  # Run panel linear regression
+  plm(Viol_crime_rate_1k_log ~ RTC_LAW +
+        White_Male_15_to_19_years +
+        White_Male_20_to_39_years +
+        Black_Male_15_to_19_years +
+        Black_Male_20_to_39_years +
+        Other_Male_15_to_19_years +
+        Other_Male_20_to_39_years +
+        Unemployment_rate +
+        Poverty_rate +
+        Population_log +
+        police_per_100k_lag,
+      data = data.frame(subset),
+      index = c("STATE", "YEAR"),
+      model = "within",
+      effect = "twoways")
+}
+```
+
+Now that we have our function, we ran it on our Donahue data subset.
+```{r, cache=TRUE}
+subsets_models_DONOHUE <- map(DONOHUE_subsets, fit_nls_on_bootstrap_DONOHUE)
+subsets_models_DONOHUE <- subsets_models_DONOHUE |>
+  map(tidy)
+```
+
+Knowing that it takes a while to run this code chunk, we saved the output.
+```{r, cache=TRUE}
+save(subsets_models_DONOHUE,
+  file = "data/wrangled/DONOHUE_simulations.rda")
+```
+
+We ran the same analysis with Bootstrapping on the Lott data for the same reason. Starting by splitting and pulling the data.
+```{r}
+set.seed(124) # Set seed for RNG state
+# Leave one out cross validation
+LOTT_splits <- d_panel_LOTT |> loo_cv()
+# Pull split data
+LOTT_subsets <- map(pull(LOTT_splits, splits), training)
+```
+
+Same as for Donahue, we created a Bootstrapping function for the Lott data.
+```{r}
+# Create function for Donahue data
+fit_nls_on_bootstrap_LOTT <- function(split) {
+    # Run panel linear regression
+  plm(LOTT_fmla,
+      data = data.frame(split),
+      index = c("STATE", "YEAR"),
+      model = "within",
+      effect = "twoways"
+  )
+}
+```
+
+Now that we have our function, we ran it on our Lott data subset.
+```{r, cache=TRUE}
+subsets_models_LOTT <- map(LOTT_subsets, fit_nls_on_bootstrap_LOTT)
+subsets_models_LOTT <- subsets_models_LOTT |>
+  map(tidy)
+```
+
+Saved the output.
+```{r, cache=TRUE}
+save(subsets_models_LOTT,
+  file = "data/wrangled/LOTT_simulations.rda")
+```
+
+Setting the names of the model objects accordingly.
+```{r}
+names(subsets_models_DONOHUE) <- paste0("DONOHUE_", seq_len(length(subsets_models_DONOHUE)))
+names(subsets_models_LOTT) <-
+  paste0("LOTT_", 1:length(subsets_models_LOTT))
+```
+
+For further analysis, we decided to combine our simulation data.
+```{r}
+# Specify Donohue Data
+simulations_DONOHUE <- subsets_models_DONOHUE |>
+  bind_rows(.id = "ID") |>
+  mutate(Analysis = "Analysis Donohue")
+# Specify Lott data
+simulations_LOTT <- subsets_models_LOTT |>
+  bind_rows(.id = "ID") |>
+  mutate(Analysis = "Analysis Lott")
+# Combine Donohue and Lott Data
+simulations <- bind_rows(simulations_DONOHUE, simulations_LOTT)
+# Order for easier comparison
+simulations <- simulations |>
+  mutate(term = factor(term,
+    levels = c(
+      str_subset(unique(pull(simulations, term)), "years", negate = TRUE),
+      sort(str_subset(unique(pull(simulations, term)), "years")))))
+```
+
+Now that we have our combined data, we plotted the coefficients for both Donohue and Lott data to visualize potential collinearity.
+```{r}
+simulations |>
+  # Create a boxplot for simulation coefficients
+  ggplot(aes(x = term, y = estimate)) +
+  geom_boxplot() +
+  facet_grid(. ~ Analysis, scale = "free_x", space = "free", drop = TRUE) + # Allow axes to vary freely
+  # Set labels
+  labs(title = "Coefficient estimates",
+       subtitle = "Estimates across leave-one-out analyses",
+       x = "Term",
+       y = "Coefficient",
+       caption = "Results from simulations") +
+  # Set theme
+  theme_linedraw() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 70, hjust = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        plot.title.position="plot")
+```
+For the Donohue data, we see that both Other Male age groups have a relatively higher coefficient absolute value in comparison to the other variables, which have coefficients of about 0. Have this relatively high magnitude coefficients show that there is likely collinearity in the Donohue data.
+
+For the Lott data, we can see a similar trend as the absolute value for the coefficients of the Other Race variables, regardless of gender and age group, are relatively high compared to the other variables in the data. There seems to also be rather high coefficients for the variables in the Black racial group, which can also seem to show collinearity, but the biggest tell of collinearity is the Other Race variables as those coefficients are much higher than even the variables within the Black race.
+
+We then created a similar plot for the standard deviation of the coefficients according to the simulation.
+```{r}
+# Extract standard deviation from data
+coeff_sd <- simulations |>
+  group_by(Analysis, term) |>
+  summarize("SD" = sd(estimate))
+# Plot standard deviation
+coeff_sd |>
+  ggplot(aes(x = Analysis, y = SD)) +
+  geom_jitter(width = 0.1, alpha = 0.5, size = 2) + # Add jitter
+  # Set labels
+  labs(title = "Coefficient variability",
+       subtitle = "SDs of coefficient estimates from leave-one-out analysis",
+       x = "Term",
+       y = "Coefficient Estimate \n Standard Deviations",
+       caption = "Results from simulations") +
+  # Set theme
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 8, color = "black"),
+        axis.text.y = element_text(color = "black"),
+        plot.title.position="plot")
+```
+As we can see the Lott dataset contains variables that have more deviation meaning they are more spread out, while the Donohue dataset has variables that are more centered.
+
+To determine how much of the variance is determined by collinearity, we calculated the Variance Inflation Factor (VIF) for the Donohue data.
+```{r}
+# Create Donohue model matrix
+lm_DONOHUE_data <- as.data.frame(model.matrix(DONOHUE_OUTPUT))
+# Define regression model
+lm_DONOHUE_data <- lm_DONOHUE_data |> 
+  mutate(Viol_crime_rate_1k_log = plm::Within(pull(
+    d_panel_DONOHUE, Viol_crime_rate_1k_log
+  )), effect = "twoways")
+
+# Specify Donohue model
+lm_DONOHUE <- lm(Viol_crime_rate_1k_log ~
+RTC_LAWTRUE +
+  White_Male_15_to_19_years +
+  White_Male_20_to_39_years +
+  Black_Male_15_to_19_years +
+  Black_Male_20_to_39_years +
+  Other_Male_15_to_19_years +
+  Other_Male_20_to_39_years +
+  Unemployment_rate +
+  Poverty_rate +
+  Population_log +
+  police_per_100k_lag,
+data = lm_DONOHUE_data
+)
+
+# Calculate VIF for Donohue data
+vif_DONOHUE <- vif(lm_DONOHUE)
+
+# Clean result into a table
+vif_DONOHUE <- vif_DONOHUE |>
+  as_tibble() |>
+  cbind(names(vif_DONOHUE)) |>
+  as_tibble()
+colnames(vif_DONOHUE) <- c("VIF", "Variable") # Set column names
+vif_DONOHUE
+```
+Overall, all these regression coefficients have a VIF value close to 1.0 meaning that is weak multicollinearity.
+
+We similarly calculated the VIF for the Lott data.
+```{r}
+# Create Lott model matrix
+lm_LOTT_data <- as.data.frame(model.matrix(LOTT_OUTPUT))
+# Define regression model
+lm_LOTT_data <- lm_LOTT_data |>
+  mutate(Viol_crime_rate_1k_log = plm::Within(pull(d_panel_LOTT, Viol_crime_rate_1k_log), effect = "twoways")) |>
+  rename(RTC_LAW = RTC_LAWTRUE)
+# Specify Lott model
+lm_LOTT <- lm(LOTT_fmla, data = lm_LOTT_data)
+
+# Calculate VIF for Lott data
+vif_LOTT <- vif(lm_LOTT)
+# Convert LOTT data into tibble
+vif_LOTT <- vif_LOTT |>
+  as_tibble()  |>
+  cbind(names(vif_LOTT))  |>
+  as_tibble()
+# Assign column names
+colnames(vif_LOTT) <- c("VIF", "Variable")
+
+# Clean result into a table
+vif_LOTT |> 
+  mutate(Variable = str_replace(string = Variable,
+                                pattern = "RTC_LAW",
+                                replacement = "RTC_LAWTRUE"))
+```
+A large number of regression coefficients have a large VIF value meaning there exists problematic multicollinearity for those variables. The few variables that have a VIF value less than 10 are: RTC_LAW, Unemployment_rate, Poverty_rate, Population_log, and police_per_100k_lag
+
+We then combined our Donohue and Lott data sets to be able visualize VIF values across both data sets.
+```{r}
+# Identify as Donohue data
+vif_DONOHUE <- vif_DONOHUE |>
+  mutate(Analysis = "Analysis Donohue")
+# Identify as Lott data
+vif_LOTT <- vif_LOTT |>
+  mutate(Analysis = "Analysis Lott")
+# Combine data
+vif_df <- bind_rows(vif_DONOHUE, vif_LOTT)
+```
+
+With our combined data, we then plotted the VIF results.
+```{r}
+# Plot VIF
+vif_df |>
+  ggplot(aes(x = Analysis, y = VIF)) +
+  geom_jitter(width = 0.1, alpha = 0.5, size = 2) + # Add jitter
+  geom_hline(yintercept = 10, color = "red") + # Add horizontal line at VIF Cutoff
+  geom_text(aes(.75, 13, label = "typical cutoff of 10")) + # Set label/text
+  coord_trans(y = "log10") + # Scale axis
+  # Add labels
+  labs(title = "Variance inflation factors") +
+  # Set theme
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(color = "black"),
+        axis.text.y = element_text(color = "black"))
+```
+As we can see, the Lott dataset contains many variables that have a VIF value >= 10 which indicates that there exists problematic multicollinearity. On the other hand, the Donohue dataset does not contain any variables with a VIF value that is >= 10.
+
+## Conclusion
+
+From our initial exploratory data analysis, we were able to see minor correlations between variables, but were not able to visually see a strong case for multicollinearity between variables. We decided to drill down in our mathematical data analysis to see if there was any multicollinearity when analyzing right to carry laws and violence rates. Although our Donohue and Lott data sets seemed to contradict each other in terms of the value and sign of the regression coefficient for right to carry laws, they did agree in whether there is multicollinearity in our variables through our initial visualizations as there was a strong correlation within race in both data sets. In doing a VIF analysis, we took an even deeper dive in determining multicollinearity and found that the magnitude of our regression coefficients in the Donohue was not significant with VIF values all below 10, but in the Lott data set, we did see variables with VIF values above 10, which would imply multicollinearity. In the Lott data set, Black Female ages 10-19 had the highest multicollinearity along with other variables within the Black and Other race variables.

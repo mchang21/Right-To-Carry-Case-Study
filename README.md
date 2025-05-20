@@ -19,3 +19,7 @@ What is the effect of multicollinearity on coefficient estimates from linear reg
 ## Data Set
 
 The dataset that we will be using for our case study is sourced from two contradictory analyses. The first is from John J. Donohue et al., in their analysis Right-to-Carry Laws and Violent Crime: A Comprehensive Assessment Using Panel Data and a State-Level Synthetic Control Analysis. The second is from David B. Mustard & John Lott and their analysis Crime, Deterrence, and Right-to-Carry Concealed Handguns. Coase-Sandor Institute for Law & Economics Working Paper No. 41.
+
+## Final
+
+Click [here](https://htmlpreview.github.io/?https://github.com/mchang21/Right-To-Carry-Case-Study/blob/main/cs02.html) to view the case study.
